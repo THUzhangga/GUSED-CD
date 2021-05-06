@@ -143,7 +143,8 @@ if __name__ == '__main__':
     try:
         df_obs = pd.read_csv('Sediment Profiles of check-dam.csv')
     except:
-        df_obs = None
+        url= ''
+        df_obs = pd.read_html(url)
     z_obs = df_obs[f'N{0}'].values - 0.809
     x_obs = df_obs['x'].values
     f_obs = interpolate.interp1d(x_obs, z_obs)
