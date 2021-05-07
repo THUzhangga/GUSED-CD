@@ -74,7 +74,7 @@ def sedi_trans(conc, x, q_o, w, rmax, f):
 
 if __name__ == '__main__':
     grav = 9.81
-    manning = 0.06 # manning coefficient
+    manning = 0.05 # manning coefficient
     rho = 1000 # water density
     Sigma = 1600 # wet density
     poro = 0.4 # porosity
@@ -140,11 +140,13 @@ if __name__ == '__main__':
     sol_old = None
 
     # read the measured data
-    try:
-        df_obs = pd.read_csv('Sediment Profiles of check-dam.csv')
-    except:
-        url= ''
-        df_obs = pd.read_html(url)
+    try: # read locally
+        df_obs = pd.read_csv('Sediment_Profiles_of_check_dam.csv')
+    except: # read from github
+        print('Reading measured sediment profiles from Github')
+        url = "https://raw.githubusercontent.com/THUzhangga/GUSED-CD/main/Sediment_Profiles_of_check_dam.csv"
+        df_obs = pd.read_csv(url)
+        df_obs.to_csv('Sediment_Profiles_of_check_dam.csv', index=False)
     z_obs = df_obs[f'N{0}'].values - 0.809
     x_obs = df_obs['x'].values
     f_obs = interpolate.interp1d(x_obs, z_obs)
@@ -166,14 +168,8 @@ if __name__ == '__main__':
         print('Total time step:%d, run:%d'%(k, N))
         capacity = calc_capacity()
         # determine the water depth at the dam
-        if (spillway_height - depth[0] - elev[0] <= 0.001 or capacity < d_t * Q):
-            # if check-dam is full or capacity is too small, overflow occurs
-            q_out = Q
-            depth[0] = spillway_height - elev[0]
-            q_o_list[0] = q_out / dam_width
-            vel[0] = q_out / depth[0]
-        else: # check-dam is not full
-            q_out = 0
+        if (spillway_height - depth[0] - elev[0] > 0.001 and capacity > d_t * Q):# check-dam is not full   
+            Q_out = 0
             vel[0] = 0
             # water depth at the dam uplifted
             # find the end of the backwater region
@@ -191,13 +187,37 @@ if __name__ == '__main__':
                     water_level_idx = min(i, backwater_region_idx)
                     depth[0] = elev[i]+depth[i] - elev[0]
                     break
-
+        else:
+            # if check-dam is full or capacity is too small, overflow occurs
+            # check if all the inflow could overflow
+            l = 0
+            r = 0.1
+            iter = 0
+            while iter<10:
+                h = (l + r) / 2
+                Q_out = flume_width * 1.4 * h **1.5
+                vol = 0
+                for j in range(backwater_region_idx):
+                    w_1 = calc_width(j, depth[j])
+                    w_2 = calc_width(j, spillway_height+h-elev[j]-depth[j])
+                    area = (w_1 + w_2) * (spillway_height+h - elev[j]-depth[j]) / 2
+                    vol += area * d_x
+                if vol + Q_out * d_t > Q * d_t:
+                    r = h
+                else:
+                    l = h
+                iter += 1
+            Q_out = flume_width * 1.4 * h **1.5
+            depth[0] = spillway_height - elev[0] + h
+            q_o_list[0] = Q_out / calc_width(0, depth[0])
+            vel[0] = Q_out / depth[0]
+            
         for i in range(1, no_x + 1): # determine the unit discharge at each site
             y0 = depth[i-1]
             normal_depth = calc_normal_depth(i, max((elev[i]-elev[i-1])/d_x, 0.01), Q)
             normal_depth_list[i] = normal_depth
             depth[i] = depth[i-1] # in fact, depth[i] has not been solved, use the depth at the former site
-            if (q_out == 0): # check-dam is not full
+            if (Q_out == 0): # check-dam is not full
                 if (i>water_level_idx): # beyond the current backwater region
                     if (i>flume_idx): # in the branch gully
                         q_o = Q / max(calc_width(i, depth[i]), 2*normal_depth)
@@ -227,7 +247,7 @@ if __name__ == '__main__':
 
                     q_o = Q * (area_i/area) / max(calc_width(i, depth[i]), 2*normal_depth)
             else:  # check-dam is full
-                q_o = Q / max(calc_width(i, depth[i]), 2*normal_depth)
+                q_o = Q_out / max(calc_width(i, depth[i]), 2*normal_depth)
 
             q_o_list[i] = q_o
             n = manning
@@ -238,7 +258,7 @@ if __name__ == '__main__':
 
             if np.sum(np.isnan(sol))>0 or sol[1][0]>1: # NAN occurs
                 print('i', i, elev[i], elev[i-1])
-                print('q_out', q_out)
+                print('Q_out', Q_out)
                 print(q_o, y0, x, dzdx, 1-q_o**2 / 9.81 / y0**3)
                 print('dydx', -(dzdx - n**2 * q_o**2 / y0**(10 / 3)) / (1 - q_o**2 / 9.81 / y0**3))
                 print(sol, sol_old)
@@ -297,23 +317,16 @@ if __name__ == '__main__':
             else: # calculate the sediment deposition in the unit
                 conc_local[no_x-i] = conc
                 conc_all[no_x-i, k] = conc
-                d_mass = 0
-                for nc in range(n_class):
-                    d_mass += d_t * q_o_all[j, k-1] * conc_o[nc] # sediment in at last time step
-                    d_mass -= d_t * q_o * conc[nc] # sediment out at this time step
-                    d_mass -= depth[j] * d_x * conc[nc] # suspended sediment at this time step
-                    d_mass += (depth[j] * d_x - (q_o_all[j, k-1] - q_o)*d_t) * conc_all[j, k-1, nc] #  suspended sediment at last time step
-                d_mass = max(d_mass, 0)
-                d_mass /= d_t
+                d_mass = (np.sum(conc_o)-np.sum(conc)) * q_o
             d_z = d_mass*d_t/Sigma/(1. - poro)/d_x
             elev[no_x - i] += d_z
             conc_o = conc.copy() # must copy the value
-        sedi_out += np.sum(conc_local[0]) * q_out * d_t
+        sedi_out += np.sum(conc_local[0]) * Q_out * d_t
 
         # after each 12 minutes, there was a 24-h break.
         # water stored were clear and all the sediments were deposited
         if (k>0 and k % (720/d_t) ==0):
-            # adjust the water depth
+            # horizontal water surface
             depth = spillway_height - elev
             for i in range(no_x+1):
                 w1 = calc_width(i, depth[i])
@@ -351,6 +364,7 @@ if __name__ == '__main__':
                 plt.plot(X, z_obs_new, 'k-', label='observation of run %d' % (N))
 
                 plt.legend()
+                # plt.savefig('fig/Obs_and_sim_sediment_prpfiles_Run%d.png' % (N), dpi=150)
                 plt.show()
             elev_all[:, N] = elev
             inflow = Q * 12 * d_t
@@ -363,3 +377,5 @@ if __name__ == '__main__':
             sedi_out = 0
 
             depth *= 0 # clear water
+    np.save('profiles.npy', elev_all)
+    np.save('X.npy', X)
